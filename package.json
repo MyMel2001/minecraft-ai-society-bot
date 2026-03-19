@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "mineflayer": "^4.35.0",
-    "mineflayer-pathfinder": "^1.4.5",
+    "mineflayer-pathfinder": "^2.4.5",
     "dotenv": "^16.4.5",
     "openai": "^4.62.0",
     "vec3": "^0.1.10"
