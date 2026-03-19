@@ -17,6 +17,7 @@ const NUM_BOTS = parseInt(process.env.NUM_BOTS) || 1;
 const BASE_USERNAME = process.env.BASE_USERNAME || 'AI_SocietyBuilder';
 
 // ==================== ALL 19 TOOLS ====================
+// (Kept identical to your original list for consistency)
 const tools = [
   { type: "function", function: { name: "send_chat", description: "Send public chat message", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
   { type: "function", function: { name: "whisper", description: "Private message a player", parameters: { type: "object", properties: { player: { type: "string" }, message: { type: "string" } }, required: ["player", "message"] } } },
@@ -40,29 +41,34 @@ const tools = [
 ];
 
 function createToolHandlers(bot) {
+  // Use bot.registry if available, otherwise fallback to version factory
+  const getMcData = () => bot.registry || mcDataFactory(bot.version || process.env.VERSION || '1.20.1');
+
   return {
     send_chat: async ({ message }) => { bot.chat(message); return `Sent: ${message}`; },
     whisper: async ({ player, message }) => { bot.chat(`/msg ${player} ${message}`); return `Whispered`; },
     navigate_to: async ({ x, y, z }) => {
-      if (!bot.pathfinder) return "Pathfinder not loaded yet";
+      if (!bot.pathfinder) return "Pathfinder failed to initialize.";
       const goal = new goals.GoalNear(x, y, z, 1);
       bot.pathfinder.setGoal(goal);
       return new Promise((resolve) => {
-        const t = setTimeout(() => { bot.pathfinder.setGoal(null); resolve("Timeout"); }, 30000);
+        const t = setTimeout(() => { bot.pathfinder.setGoal(null); resolve("Timeout"); }, 45000);
         bot.once('goal_reached', () => { clearTimeout(t); resolve(`Reached`); });
       });
     },
     dig_block: async ({ x, y, z }) => {
       const block = bot.blockAt(new Vec3(x, y, z));
       if (!block) return "No block";
-      try { await bot.dig(block); return `Mined ${block.name}`; } catch (e) { return `Dig failed: ${e.message}`; }
+      await bot.dig(block);
+      return `Mined ${block.name}`;
     },
     place_block: async ({ x, y, z }) => {
       const pos = new Vec3(x, y, z);
       const below = bot.blockAt(pos.offset(0, -1, 0));
       if (!below || below.name === 'air') return "No solid block below";
       await bot.lookAt(pos);
-      try { await bot.placeBlock(below, new Vec3(0, 1, 0)); return `Placed block`; } catch (e) { return `Place failed: ${e.message}`; }
+      await bot.placeBlock(below, new Vec3(0, 1, 0));
+      return `Placed block`;
     },
     look_at: async ({ x, y, z }) => { bot.lookAt(new Vec3(x, y, z)); return "Looking"; },
     equip_item: async ({ itemName }) => {
@@ -87,8 +93,8 @@ function createToolHandlers(bot) {
       return block ? `${block.name} @ ${Math.round(block.position.x)},${Math.round(block.position.y)},${Math.round(block.position.z)}` : `No ${type} nearby`;
     },
     craft_item: async ({ itemName, count = 1 }) => {
-      if (!bot.registry) return "Registry not ready";
-      const item = bot.registry.itemsByName[itemName.toLowerCase().replace(/ /g, '_')];
+      const data = getMcData();
+      const item = data.itemsByName[itemName.toLowerCase().replace(/ /g, '_')];
       if (!item) return "Unknown item";
       let craftingTable = null;
       let recipes = bot.recipesFor(item.id, null, count, null);
@@ -104,7 +110,7 @@ function createToolHandlers(bot) {
         const item = bot.inventory.items().find(i => i.name.toLowerCase().includes(itemName.toLowerCase()));
         if (item) await bot.equip(item, 'hand');
       }
-      try { await bot.consume(); return "Ate food"; } catch (e) { return "Can't eat"; }
+      try { await bot.consume(); return "Ate food"; } catch (e) { return "Cant eat"; }
     },
     activate_block: async ({ x, y, z }) => {
       const block = bot.blockAt(new Vec3(x, y, z));
@@ -122,10 +128,10 @@ function createToolHandlers(bot) {
     set_control_state: async ({ control, state }) => { bot.setControlState(control, state); return `${control}=${state}`; },
     sleep_in_bed: async ({ x, y, z }) => {
       let bed = x !== undefined ? bot.blockAt(new Vec3(x, y, z)) : bot.findBlock({ matching: b => b.name.includes('bed'), maxDistance: 16 });
-      if (!bed) return "No bed";
-      try { await bot.sleep(bed); return "Sleeping"; } catch (e) { return "Can't sleep"; }
+      if (!bed) return "No bed found";
+      try { await bot.sleep(bed); return "Sleeping"; } catch (e) { return "Cant sleep"; }
     },
-    start_fishing: async () => { try { await bot.fish(); return "Fishing"; } catch (e) { return "Can't fish"; } }
+    start_fishing: async () => { try { await bot.fish(); return "Fishing"; } catch (e) { return "Cant fish"; } }
   };
 }
 
@@ -144,31 +150,32 @@ Health: ${bot.health} | Hunger: ${bot.food} | Time: ${bot.time ? (bot.time.isDay
 Inventory: ${inventory}
 Nearby entities: ${nearby}
 Recent chat: ${chatHistory.slice(-5).join('\n') || 'none'}
-Goal: Be a society builder.`;
+Goal: Act as a helpful citizen.`;
 }
 
-function setupAutonomousBot(username) {
-  const botVersion = process.env.VERSION || '1.20.1';
-
-  // 1. Create Bot
+async function setupAutonomousBot(username) {
+  const version = process.env.VERSION || '1.20.1';
+  
+  // 1. Create the bot instance
   const bot = mineflayer.createBot({
     host: process.env.MINECRAFT_HOST,
     port: parseInt(process.env.MINECRAFT_PORT),
     username: username,
-    version: botVersion,
+    version: version,
     auth: 'offline'
   });
 
-  // 2. Load plugin IMMEDIATELY, but wrap in try/catch to handle potential version mismatch
-  try {
-    bot.loadPlugin(pathfinder);
-  } catch (err) {
-    console.error(`[${username}] Early pathfinder load error:`, err.message);
-  }
+  // 2. THE CRITICAL FIX: Manually inject version data BEFORE loading plugins
+  // This satisfies pathfinder's need for 'blocksByName' immediately.
+  bot.registry = mcDataFactory(version);
+  bot.version = version;
 
   let chatHistory = [];
   let isDeciding = false;
   const toolHandlers = createToolHandlers(bot);
+
+  // 3. Load the plugin now that the data is manually injected
+  bot.loadPlugin(pathfinder);
 
   async function makeDecision() {
     if (isDeciding || !bot.entity) return;
@@ -180,6 +187,7 @@ function setupAutonomousBot(username) {
         messages: [{ role: "system", content: "You are an autonomous AI citizen." }, { role: "user", content: obs }],
         tools, tool_choice: "auto", temperature: 0.7
       });
+
       const msg = response.choices[0].message;
       if (msg.tool_calls) {
         for (const call of msg.tool_calls) {
@@ -195,32 +203,17 @@ function setupAutonomousBot(username) {
     isDeciding = false;
   }
 
-  // 3. Handle setup on spawn with a slight delay if necessary
   bot.on('spawn', () => {
     console.log(`🤖 ${username} spawned.`);
-    
-    const initPathfinder = () => {
-      try {
-        if (!bot.pathfinder) {
-          console.log(`[${username}] Pathfinder property missing, reloading...`);
-          bot.loadPlugin(pathfinder);
-        }
-        
-        // Use bot.registry if available, otherwise fallback to version factory
-        const mcData = bot.registry || mcDataFactory(bot.version);
-        if (mcData) {
-          const movements = new Movements(bot, mcData);
-          bot.pathfinder.setMovements(movements);
-          console.log(`[${username}] Pathfinder movements ready.`);
-        }
-      } catch (e) {
-        console.error(`[${username}] Pathfinder setup failed:`, e.message);
-      }
-    };
-
-    // Small delay to ensure plugin injection is processed
-    setTimeout(initPathfinder, 1000);
-    setInterval(makeDecision, 7000);
+    try {
+      // Setup movements using the registry we forced in earlier
+      const movements = new Movements(bot, bot.registry);
+      bot.pathfinder.setMovements(movements);
+      console.log(`[${username}] Movements configured.`);
+    } catch (e) {
+      console.error(`[${username}] Pathfinder setup error:`, e.message);
+    }
+    setInterval(makeDecision, 8000);
   });
 
   bot.on('chat', (u, m) => { chatHistory.push(`[${u}]: ${m}`); if (chatHistory.length > 15) chatHistory.shift(); });
@@ -229,7 +222,7 @@ function setupAutonomousBot(username) {
 }
 
 // ==================== START ====================
-console.log(`Starting AI bots...`);
+console.log(`Starting autonomous AI citizens...`);
 for (let i = 0; i < NUM_BOTS; i++) {
   const suffix = NUM_BOTS === 1 ? '' : '_' + Math.random().toString(36).substring(2, 6).toUpperCase();
   setTimeout(() => setupAutonomousBot(BASE_USERNAME + suffix), i * 5000);
