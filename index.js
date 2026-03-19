@@ -40,13 +40,24 @@ function createToolHandlers(bot, memory) {
       });
     },
     dig_block: async ({ x, y, z }) => {
-      const b = bot.blockAt(new Vec3(x, y, z));
-      if (!b || b.name.includes('air')) return "Nothing there.";
+      const pos = new Vec3(x, y, z);
+      const block = bot.blockAt(pos);
+  
+      if (!block || block.name === 'air') return "Nothing there.";
+  
       try {
-        await bot.lookAt(b.position);
-        await bot.dig(b, true, 'raycast');
-        return `Mined ${b.name}`;
-      } catch (e) { return "Digging failed."; }
+        await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true);
+    
+        bot.startDigging(block);
+    
+        // Wait until block is air (or timeout)
+        await bot.waitForBlockChange(pos, 30000); // throws after 30s
+    
+        return `Mined ${block.name}`;
+      } catch (err) {
+        bot.stopDigging(); // important: clean up!
+        return "Digging failed: " + (err.message || "timeout / interrupted");
+      }
     },
     find_nearest_block: async ({ type }) => {
       const block = bot.findBlock({ 
