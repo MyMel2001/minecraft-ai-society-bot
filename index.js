@@ -40,23 +40,37 @@ function createToolHandlers(bot, memory) {
       });
     },
     dig_block: async ({ x, y, z }) => {
-      const pos = new Vec3(x, y, z);
+      const pos = new Vec3(Math.floor(x), Math.floor(y), Math.floor(z));
       const block = bot.blockAt(pos);
-  
-      if (!block || block.name === 'air') return "Nothing there.";
-  
+
+      if (!block || block.name === 'air' || block.name.includes('air')) {
+        return "Nothing to dig (air or invalid).";
+      }
+
+      if (!bot.canDigBlock(block)) {
+        return `Cannot dig ${block.name} (out of reach / obstructed / creative mode issue?)`;
+      }
+
       try {
-        await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true);
-    
-        bot.startDigging(block);
-    
-        // Wait until block is air (or timeout)
-        await bot.waitForBlockChange(pos, 30000); // throws after 30s
-    
-        return `Mined ${block.name}`;
+        // Smooth look at center of block face (helps reach & face detection)
+        const targetLook = pos.offset(0.5, 0.5, 0.5);
+        await bot.lookAt(targetLook, true);  // true = instant for reliability
+
+        bot.chat(`Starting to dig ${block.name} at (${x},${y},${z})`);  // ← debug chat so you see it
+
+        await bot.dig(block);  // This promise should resolve ONLY when block is gone
+
+        // Double-check it's really air now (server can lag/desync)
+        const after = bot.blockAt(pos);
+        if (after && after.name !== 'air') {
+          return `Dig reported success but block is still ${after.name} (desync?)`;
+        }
+
+        return `Successfully mined ${block.name}`;
       } catch (err) {
-        bot.stopDigging(); // important: clean up!
-        return "Digging failed: " + (err.message || "timeout / interrupted");
+        console.error(`Dig error for ${block.name}:`, err);
+        bot.stopDigging();  // Clean up any hanging dig state!
+        return `Dig failed: ${err.message || 'unknown error'}`;
       }
     },
     find_nearest_block: async ({ type }) => {
@@ -172,7 +186,15 @@ function startBot(username, trait) {
       const response = await openai.chat.completions.create({
         model: MODEL,
         messages: [
-          { role: "system", content: `You are ${username}, ${trait}. If stuck, pick coordinates far away. Avoid repeating actions.` },
+          { role: "system", content: `You are ${username}, ${trait}.
+          Use tools wisely: dig_block to mine interesting blocks nearby, navigate_to to move, look_at to aim.
+You may want to create in-game tools!
+If you see ore, stone, wood, dirt — dig it using the proper in-game tool!
+If movement fails or times out, try digging under or around obstacles.
+Avoid spamming the same coordinates.
+Avoid copying other users/bots unless told to do so.
+Avoid death.
+Create society with the other bots.` },
           { role: "user", content: `Pos: ${Math.round(pos.x)}, ${Math.round(pos.z)} | Inv: ${inv} | Chat: ${chatHistory.slice(-5).join('|')}` }
         ],
         tools: toolsDefinition, tool_choice: "auto", temperature: 0.9
