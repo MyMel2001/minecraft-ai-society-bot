@@ -51,10 +51,14 @@ function createToolHandlers(bot) {
         bot.once('goal_reached', () => { clearTimeout(t); r("Reached"); });
       });
     },
-    dig_block: async ({ x, y, z }) => { await bot.dig(bot.blockAt(new Vec3(x, y, z))); return "Mined"; },
+    dig_block: async ({ x, y, z }) => { 
+        const b = bot.blockAt(new Vec3(x,y,z));
+        if (b) await bot.dig(b); return "Mined"; 
+    },
     place_block: async ({ x, y, z }) => {
       const pos = new Vec3(x, y, z);
-      await bot.placeBlock(bot.blockAt(pos.offset(0, -1, 0)), new Vec3(0, 1, 0));
+      const b = bot.blockAt(pos.offset(0, -1, 0));
+      if (b) await bot.placeBlock(b, new Vec3(0, 1, 0));
       return "Placed";
     },
     look_at: async ({ x, y, z }) => { bot.lookAt(new Vec3(x, y, z)); return "Looking"; },
@@ -88,53 +92,55 @@ function createToolHandlers(bot) {
 }
 
 function setupAutonomousBot(username) {
+  // 1. HARDSET THE VERSION HERE
   const version = process.env.VERSION || '1.20.1';
   
+  // 2. Build the data registry MANUALLY
+  const data = mcDataFactory(version);
+  if (!data) {
+      console.error(`FATAL: Could not load data for version ${version}. Check your .env!`);
+      return;
+  }
+
   const bot = mineflayer.createBot({
     host: process.env.MINECRAFT_HOST,
     port: parseInt(process.env.MINECRAFT_PORT),
     username: username,
-    version: version,
+    version: version, // Force it here
     auth: 'offline'
   });
+
+  // 3. ATTACH THE REGISTRY MANUALLY
+  // This is the "Nuclear" fix. We give it the data before it can ask for it.
+  bot.registry = data;
 
   let chatHistory = [];
   let isDeciding = false;
   const toolHandlers = createToolHandlers(bot);
 
-  // CRITICAL: Delay plugin injection until Mineflayer clears the "Injection Allowed" flag
-  bot.on('inject_allowed', () => {
-    // Force set version again just in case
-    bot.version = version; 
-    try {
-      bot.loadPlugin(pathfinder);
-      console.log(`[${username}] Pathfinder injected.`);
-    } catch (e) {
-      console.error(`[${username}] Injection error:`, e.message);
-    }
-  });
+  // 4. Load plugin only after we've manually fed it the registry
+  bot.loadPlugin(pathfinder);
 
   bot.on('spawn', () => {
     console.log(`🤖 ${username} online.`);
     
-    // We wait 2 seconds after spawn to ensure pathfinder properties are attached
-    setTimeout(() => {
-      try {
-        const mcData = mcDataFactory(bot.version);
-        bot.pathfinder.setMovements(new Movements(bot, mcData));
-        console.log(`[${username}] Movements ready.`);
-      } catch (e) {
-        console.error(`[${username}] Setup error:`, e.message);
-      }
-    }, 2000);
+    // Configure movements
+    try {
+        const movements = new Movements(bot, data);
+        bot.pathfinder.setMovements(movements);
+        console.log(`[${username}] Pathfinder active.`);
+    } catch (e) {
+        console.error(`[${username}] Pathfinder Setup error:`, e.message);
+    }
 
+    // AI Loop
     setInterval(async () => {
       if (isDeciding || !bot.entity) return;
       isDeciding = true;
       try {
         const response = await openai.chat.completions.create({
           model: MODEL,
-          messages: [{ role: "system", content: "You are a Minecraft AI." }, { role: "user", content: "Decide your next action." }],
+          messages: [{ role: "system", content: "You are a Minecraft AI." }, { role: "user", content: "Check observation and act." }],
           tools, tool_choice: "auto"
         });
         const msg = response.choices[0].message;
