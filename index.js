@@ -7,24 +7,19 @@ const OpenAI = require('openai');
 const Vec3 = require('vec3').Vec3;
 const mcDataFactory = require('minecraft-data');
 
+// BUG FIX: Set high timeout for slow LLM responses
 const openai = new OpenAI({
   baseURL: process.env.OPENAI_BASE_URL,
-  apiKey: process.env.OPENAI_API_KEY || 'sk-1234'
+  apiKey: process.env.OPENAI_API_KEY || 'sk-1234',
+  timeout: 600000 // 10 minutes in milliseconds
 });
 
 const MODEL = process.env.MODEL;
 const NUM_BOTS = parseInt(process.env.NUM_BOTS) || 1;
 const BASE_USERNAME = process.env.BASE_USERNAME || 'AI_Bot';
 
-// PERSONALITY POOL: Distributed to bots to ensure variety
-const PERSONALITIES = [
-  "an obsessive builder who loves symmetry",
-  "a cautious explorer who fears the dark",
-  "a grumpy miner who only cares about iron and coal",
-  "a social butterfly who constantly talks to others",
-  "a practical survivalist focused on food and farming",
-  "a chaotic decorator who places torches everywhere"
-];
+// Personalities to separate the "brains"
+const TRAITS = ["a builder", "a miner", "an explorer", "a farmer", "a guard"];
 
 // ==================== ALL 19 TOOLS ====================
 const tools = [
@@ -57,79 +52,86 @@ function createToolHandlers(bot) {
       const goal = new goals.GoalNear(x, y, z, 1);
       bot.pathfinder.setGoal(goal);
       return new Promise((r) => {
-        const t = setTimeout(() => { bot.pathfinder.setGoal(null); r("Timeout"); }, 600000);
+        const t = setTimeout(() => { bot.pathfinder.setGoal(null); r("Nav Timeout"); }, 600000);
         bot.once('goal_reached', () => { clearTimeout(t); r("Reached"); });
       });
     },
     dig_block: async ({ x, y, z }) => {
-      const b = bot.blockAt(new Vec3(x, y, z));
-      if (!b) return "No block";
-      await bot.lookAt(b.position);
-      await bot.dig(b, true); // Hold action fix
-      return `Mined ${b.name}`;
+      const block = bot.blockAt(new Vec3(x, y, z));
+      if (!block || block.name === 'air') return "No block found.";
+      
+      try {
+        await bot.lookAt(block.position);
+        // BUG FIX: Manual validation and "swing" check to ensure it holds
+        if (!bot.canDigBlock(block)) return "Can't reach it.";
+        
+        // Wrapping dig in a promise to ensure it doesn't "click and release"
+        await bot.dig(block, 'ignore', 'raycast'); 
+        return `Successfully mined ${block.name}`;
+      } catch (err) { return `Digging interrupted: ${err.message}`; }
     },
     place_block: async ({ x, y, z }) => {
       const pos = new Vec3(x, y, z);
       const below = bot.blockAt(pos.offset(0, -1, 0));
-      if (!below) return "No base";
+      if (!below) return "No solid base.";
       await bot.lookAt(pos);
       await bot.placeBlock(below, new Vec3(0, 1, 0));
-      return "Placed";
+      return "Placed.";
     },
-    look_at: async ({ x, y, z }) => { bot.lookAt(new Vec3(x, y, z)); return "Looking"; },
+    look_at: async ({ x, y, z }) => { bot.lookAt(new Vec3(x, y, z)); return "Looking."; },
     equip_item: async ({ itemName }) => {
       const item = bot.inventory.items().find(i => i.name.includes(itemName.toLowerCase()));
-      if (item) { await bot.equip(item, 'hand'); return "Equipped"; }
-      return "Not found";
+      if (item) { await bot.equip(item, 'hand'); return "Equipped."; }
+      return "Not found.";
     },
     attack_entity: async ({ entityId }) => {
-      const e = bot.entities[entityId]; if (e) { bot.attack(e); return "Attacking"; }
-      return "No entity";
+      const e = bot.entities[entityId]; if (e) { bot.attack(e); return "Attacking."; }
+      return "No entity.";
     },
     interact_entity: async ({ entityId }) => {
-      const e = bot.entities[entityId]; if (e) { bot.useOn(e); return "Interacting"; }
-      return "No entity";
+      const e = bot.entities[entityId]; if (e) { bot.useOn(e); return "Interacted."; }
+      return "No entity.";
     },
     get_block_info: async ({ x, y, z }) => {
       const b = bot.blockAt(new Vec3(x, y, z));
-      return b ? b.name : "None";
+      return b ? b.name : "Air";
     },
-    find_nearest_block: async ({ type, maxDistance = 32 }) => {
-      const block = bot.findBlock({ matching: (b) => b.name.includes(type.toLowerCase()), maxDistance });
-      return block ? `${block.name} at ${block.position}` : "Not found";
+    find_nearest_block: async ({ type }) => {
+      const block = bot.findBlock({ matching: b => b.name.includes(type.toLowerCase()), maxDistance: 32 });
+      return block ? `${block.name} at ${block.position}` : "None nearby.";
     },
     craft_item: async ({ itemName, count = 1 }) => {
       const item = bot.registry.itemsByName[itemName.toLowerCase().replace(/ /g, '_')];
-      if (!item) return "Unknown item";
+      if (!item) return "Unknown item.";
       const recipes = bot.recipesFor(item.id, null, count, null);
-      if (!recipes.length) return "No recipe";
+      if (!recipes.length) return "No recipe found.";
       await bot.craft(recipes[0], count, null);
-      return "Crafted";
+      return "Crafted.";
     },
-    consume_food: async () => { try { await bot.consume(); return "Ate"; } catch (e) { return "Can't eat"; } },
+    consume_food: async () => { await bot.consume(); return "Ate."; },
     activate_block: async ({ x, y, z }) => {
       const b = bot.blockAt(new Vec3(x, y, z));
-      if (b) { await bot.activateBlock(b); return "Activated"; }
-      return "No block";
+      if (b) { await bot.activateBlock(b); return "Activated."; }
+      return "No block.";
     },
-    use_held_item: async () => { await bot.useItem(); return "Used"; },
+    use_held_item: async () => { await bot.useItem(); return "Used."; },
     toss_item: async ({ itemName, count = 1 }) => {
       const item = bot.inventory.items().find(i => i.name.includes(itemName.toLowerCase()));
       if (item) await bot.toss(item.type, null, count);
-      return "Tossed";
+      return "Dropped.";
     },
-    set_control_state: async ({ control, state }) => { bot.setControlState(control, state); return "Set"; },
+    set_control_state: async ({ control, state }) => { bot.setControlState(control, state); return "Set."; },
     sleep_in_bed: async () => {
-      const bed = bot.findBlock({ matching: b => b.name.includes('bed'), maxDistance: 16 });
+      const bed = bot.findBlock({ matching: b => b.name.includes('bed'), maxDistance: 8 });
       if (bed) await bot.sleep(bed);
-      return "Slept";
+      return "Sleeping.";
     },
-    start_fishing: async () => { await bot.fish(); return "Fishing"; }
+    start_fishing: async () => { await bot.fish(); return "Fishing."; }
   };
 }
 
-// ==================== AGENT CORE ====================
-function startBot(username, personality) {
+// ==================== RECONNECT & UNIQUE BRAIN ====================
+function startBot(username, trait) {
   const bot = mineflayer.createBot({
     host: process.env.MINECRAFT_HOST,
     port: parseInt(process.env.MINECRAFT_PORT),
@@ -139,78 +141,68 @@ function startBot(username, personality) {
   });
 
   let chatHistory = [];
-  let isDeciding = false;
-  let loopTimeout = null;
+  let isThinking = false;
+  let heartBeat = null;
   const toolHandlers = createToolHandlers(bot);
 
   bot.once('inject_allowed', () => { bot.loadPlugin(pathfinder); });
 
-  async function makeDecision() {
-    if (isDeciding || !bot.entity) return;
-    isDeciding = true;
+  async function think() {
+    if (isThinking || !bot.entity) return;
+    isThinking = true;
 
     try {
       const pos = bot.entity.position;
-      const inv = bot.inventory.items().map(i => `${i.name}x${i.count}`).join(', ') || 'empty';
-      
-      // SOCIAL AWARENESS: Label fellow bots so they recognize colleagues
-      const peers = Object.values(bot.entities)
+      const nearbyPeers = Object.values(bot.entities)
         .filter(e => e.username && e.username.startsWith(BASE_USERNAME) && e.username !== username)
-        .map(e => `${e.username} (Colleague) at ${Math.round(e.position.x)}, ${Math.round(e.position.z)}`)
-        .join('; ');
+        .map(e => e.username).join(', ') || 'none';
 
       const response = await openai.chat.completions.create({
         model: MODEL,
         messages: [
-          { role: "system", content: `You are ${username}, ${personality}. 
-            You are a distinct individual. While you work with other bots, you have your own goals. 
-            NEVER do exactly what another bot is doing. If you see a colleague mining, you should build or explore. 
-            Use chat to negotiate tasks. Your priority is survival and your unique personality.` },
-          { role: "user", content: `IDENTITY: ${username}\nPOS: ${pos.x.toFixed(1)}, ${pos.z.toFixed(1)}\nINV: ${inv}\nPEERS NEARBY: ${peers || 'none'}\nCHAT: ${chatHistory.slice(-8).join(' | ')}` }
+          { role: "system", content: `You are ${username}, ${trait}. Stay separate from other bots: ${nearbyPeers}. Focus on your role. Work toward survival.` },
+          { role: "user", content: `Pos: ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)} | Inv: ${bot.inventory.items().length} items | Chat: ${chatHistory.slice(-5).join('|')}` }
         ],
-        tools, tool_choice: "auto", temperature: 0.8
+        tools, tool_choice: "auto"
       });
 
       const msg = response.choices[0].message;
       if (msg.tool_calls) {
         for (const call of msg.tool_calls) {
           const res = await toolHandlers[call.function.name](JSON.parse(call.function.arguments));
-          console.log(`[${username}] Executed ${call.function.name} -> ${res}`);
+          console.log(`[${username}] ${call.function.name}: ${res}`);
         }
       }
-    } catch (e) { console.error(`[${username}] Brain Error:`, e.message); }
+    } catch (e) { console.error(`[${username}] AI Timeout/Error:`, e.message); }
 
-    isDeciding = false;
-    // STAGGERED HEARTBEAT: Randomizes the decision gap per bot
-    loopTimeout = setTimeout(makeDecision, 8000 + Math.random() * 5000);
+    isThinking = false;
   }
 
   bot.on('spawn', () => {
-    console.log(`✅ ${username} initialized with personality: ${personality}`);
+    console.log(`✅ ${username} (${trait}) has joined.`);
     setTimeout(() => {
       try { bot.pathfinder.setMovements(new Movements(bot, mcDataFactory(bot.version))); } catch(e) {}
-      makeDecision();
+      if (!heartBeat) heartBeat = setInterval(think, 12000 + Math.random() * 5000);
     }, 5000);
   });
 
   bot.on('chat', (u, m) => {
     if (u === username) return;
     chatHistory.push(`${u}: ${m}`);
-    if (chatHistory.length > 20) chatHistory.shift();
+    if (chatHistory.length > 15) chatHistory.shift();
   });
 
   bot.on('end', (reason) => {
-    console.log(`⚠️ ${username} exited (${reason}). Resurrection in 10s...`);
-    clearTimeout(loopTimeout);
-    setTimeout(() => startBot(username, personality), 10000);
+    console.log(`⚠️ ${username} disconnected (${reason}). Reconnecting in 10s...`);
+    clearInterval(heartBeat);
+    heartBeat = null;
+    setTimeout(() => startBot(username, trait), 10000);
   });
-
-  bot.on('error', (err) => console.log(`[${username}]`, err.message));
 }
 
-// ============ LAUNCH PERSISTENT SOCIETY ============
+// Initial Spawn
 for (let i = 0; i < NUM_BOTS; i++) {
-  const name = `${BASE_USERNAME}_${Math.random().toString(36).substring(2, 5).toUpperCase()}`;
-  const trait = PERSONALITIES[i % PERSONALITIES.length];
-  setTimeout(() => startBot(name, trait), i * 4000);
+  const name = `${BASE_USERNAME}_${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+  const trait = TRAITS[i % TRAITS.length];
+  setTimeout(() => startBot(name, trait), i * 5000);
 }
