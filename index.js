@@ -28,12 +28,12 @@ const tools = [
   { type: "function", function: { name: "interact_entity", description: "Interact (tame, trade, mount boat/minecart)", parameters: { type: "object", properties: { entityId: { type: "number" } }, required: ["entityId"] } } },
   { type: "function", function: { name: "get_block_info", description: "Check block at coordinates", parameters: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, z: { type: "number" } }, required: ["x","y","z"] } } },
 
-  // NEW FULL-GAMEPLAY TOOLS
+  // FULL-GAMEPLAY TOOLS
   { type: "function", function: { name: "find_nearest_block", description: "Find nearest block of any type", parameters: { type: "object", properties: { type: { type: "string" }, maxDistance: { type: "number" } }, required: ["type"] } } },
   { type: "function", function: { name: "craft_item", description: "Craft any item", parameters: { type: "object", properties: { itemName: { type: "string" }, count: { type: "number" } }, required: ["itemName"] } } },
   { type: "function", function: { name: "consume_food", description: "Eat food", parameters: { type: "object", properties: { itemName: { type: "string" } } } } },
   { type: "function", function: { name: "activate_block", description: "Open/activate block (chest, furnace, door, bed...)", parameters: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, z: { type: "number" } }, required: ["x","y","z"] } } },
-  { type: "function", function: { name: "use_held_item", description: "Use the item in your hand (bow, rod, flint&steel...)", parameters: { type: "object", properties: {} } } },
+  { type: "function", function: { name: "use_held_item", description: "Use the item in your hand", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "toss_item", description: "Drop items", parameters: { type: "object", properties: { itemName: { type: "string" }, count: { type: "number" } }, required: ["itemName"] } } },
   { type: "function", function: { name: "set_control_state", description: "Control movement (sprint, sneak, jump...)", parameters: { type: "object", properties: { control: { type: "string", enum: ["forward","back","left","right","jump","sprint","sneak"] }, state: { type: "boolean" } }, required: ["control","state"] } } },
   { type: "function", function: { name: "sleep_in_bed", description: "Sleep in a bed", parameters: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, z: { type: "number" } } } } },
@@ -85,12 +85,8 @@ function createToolHandlers(bot) {
       return b ? `${b.name}` : "No block";
     },
 
-    // NEW TOOLS
     find_nearest_block: async ({ type, maxDistance = 32 }) => {
-      const block = bot.findBlock({
-        matching: (b) => b.name === type || b.name.toLowerCase().includes(type.toLowerCase()),
-        maxDistance
-      });
+      const block = bot.findBlock({ matching: (b) => b.name === type || b.name.toLowerCase().includes(type.toLowerCase()), maxDistance });
       return block ? `${block.name} @ ${Math.round(block.position.x)},${Math.round(block.position.y)},${Math.round(block.position.z)}` : `No ${type} nearby`;
     },
     craft_item: async ({ itemName, count = 1 }) => {
@@ -141,21 +137,14 @@ function createToolHandlers(bot) {
       if (x !== undefined) bed = bot.blockAt(new Vec3(x, y, z));
       else bed = bot.findBlock({ matching: b => b.name.includes('bed'), maxDistance: 16 });
       if (!bed) return "No bed found";
-      try {
-        await bot.sleep(bed);
-        return "Slept in bed";
-      } catch (e) { return "Cannot sleep now"; }
+      try { await bot.sleep(bed); return "Slept in bed"; } catch (e) { return "Cannot sleep now"; }
     },
     start_fishing: async () => {
-      try {
-        await bot.fish();
-        return "Started fishing";
-      } catch (e) { return "Cannot fish (need rod + water)"; }
+      try { await bot.fish(); return "Started fishing"; } catch (e) { return "Cannot fish (need rod + water)"; }
     }
   };
 }
 
-// ==================== OBSERVATION ====================
 function getObservation(bot, chatHistory) {
   const pos = bot.entity.position;
   const inventory = bot.inventory.items().map(i => `${i.name}×${i.count}`).join(', ') || 'empty';
@@ -173,7 +162,6 @@ Recent chat: ${chatHistory.slice(-5).join('\n') || 'none'}
 Goal: You are completely free. Create a society or do whatever you want. You have full Minecraft control.`;
 }
 
-// ==================== BOT SETUP ====================
 function setupAutonomousBot(username) {
   const bot = mineflayer.createBot({
     host: process.env.MINECRAFT_HOST,
@@ -186,13 +174,6 @@ function setupAutonomousBot(username) {
   let chatHistory = [];
   let isDeciding = false;
   const toolHandlers = createToolHandlers(bot);
-
-  try {
-    bot.loadPlugin(pathfinder);
-    console.log(`[${username}] Pathfinder loaded successfully`);
-  } catch (e) {
-    console.error(`[${username}] Plugin load failed:`, e.message);
-  }
 
   async function makeDecision() {
     if (isDeciding) return;
@@ -232,8 +213,17 @@ Think creatively and long-term.` },
   }
 
   bot.on('spawn', () => {
-    console.log(`🤖 ${username} joined the world with FULL tools!`);
-    bot.pathfinder.setMovements(new Movements(bot));
+    console.log(`🤖 ${username} joined the world!`);
+
+    // ← FIXED: Load pathfinder ONLY after spawn (mcData is now ready)
+    try {
+      bot.loadPlugin(pathfinder);
+      console.log(`[${username}] Pathfinder loaded successfully`);
+      bot.pathfinder.setMovements(new Movements(bot));
+    } catch (e) {
+      console.error(`[${username}] Pathfinder load failed:`, e.message);
+    }
+
     setInterval(makeDecision, 2500);
   });
 
