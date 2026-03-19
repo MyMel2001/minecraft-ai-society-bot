@@ -96,9 +96,18 @@ function createToolHandlers(bot) {
       const b = bot.blockAt(new Vec3(x, y, z));
       return b ? b.name : "Air";
     },
-    find_nearest_block: async ({ type }) => {
-      const block = bot.findBlock({ matching: b => b.name.includes(type.toLowerCase()), maxDistance: 32 });
-      return block ? `${block.name} at ${block.position}` : "None nearby.";
+    find_nearest_block: async ({ type, maxDistance = 32 }) => {
+      // If no type is specified, or they are just looking generally, 
+      // we exclude air, cave_air, and void_air.
+      const block = bot.findBlock({
+        matching: (b) => {
+          const isMatch = type ? b.name.includes(type.toLowerCase()) : true;
+          const isNotAir = !b.name.includes('air');
+          return isMatch && isNotAir;
+        },
+        maxDistance
+      });
+      return block ? `${block.name} at ${block.position}` : "No solid blocks found nearby.";
     },
     craft_item: async ({ itemName, count = 1 }) => {
       const item = bot.registry.itemsByName[itemName.toLowerCase().replace(/ /g, '_')];
@@ -160,7 +169,7 @@ function startBot(username, trait) {
       const response = await openai.chat.completions.create({
         model: MODEL,
         messages: [
-          { role: "system", content: `You are ${username}, ${trait}. Stay separate from other bots: ${nearbyPeers}. Focus on your role. Work toward survival.` },
+          { role: "system", content: `You are ${username}, ${trait}. Stay separate from other bots: ${nearbyPeers}. Focus on your role. Work toward survival. Note: You are currently surrounded by air unless you're under water, if you are under water you are starting to lose oxygen. Swim upwards to get some air. Do not use tools to find air. Focus on finding solid resources like logs, stone, or dirt to begin your tasks` },
           { role: "user", content: `Pos: ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)} | Inv: ${bot.inventory.items().length} items | Chat: ${chatHistory.slice(-5).join('|')}` }
         ],
         tools, tool_choice: "auto"
