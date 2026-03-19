@@ -27,8 +27,6 @@ const tools = [
   { type: "function", function: { name: "attack_entity", description: "Attack entity by ID", parameters: { type: "object", properties: { entityId: { type: "number" } }, required: ["entityId"] } } },
   { type: "function", function: { name: "interact_entity", description: "Interact (tame, trade, mount boat/minecart)", parameters: { type: "object", properties: { entityId: { type: "number" } }, required: ["entityId"] } } },
   { type: "function", function: { name: "get_block_info", description: "Check block at coordinates", parameters: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, z: { type: "number" } }, required: ["x","y","z"] } } },
-
-  // FULL-GAMEPLAY TOOLS
   { type: "function", function: { name: "find_nearest_block", description: "Find nearest block of any type", parameters: { type: "object", properties: { type: { type: "string" }, maxDistance: { type: "number" } }, required: ["type"] } } },
   { type: "function", function: { name: "craft_item", description: "Craft any item", parameters: { type: "object", properties: { itemName: { type: "string" }, count: { type: "number" } }, required: ["itemName"] } } },
   { type: "function", function: { name: "consume_food", description: "Eat food", parameters: { type: "object", properties: { itemName: { type: "string" } } } } },
@@ -45,6 +43,7 @@ function createToolHandlers(bot) {
     send_chat: async ({ message }) => { bot.chat(message); return `Sent: ${message}`; },
     whisper: async ({ player, message }) => { bot.chat(`/msg ${player} ${message}`); return `Whispered`; },
     navigate_to: async ({ x, y, z }) => {
+      if (!bot.pathfinder) return "Pathfinder not loaded";
       const goal = new goals.GoalNear(x, y, z, 1);
       bot.pathfinder.setGoal(goal);
       return new Promise((resolve) => {
@@ -68,7 +67,7 @@ function createToolHandlers(bot) {
     },
     look_at: async ({ x, y, z }) => { bot.lookAt(new Vec3(x, y, z)); return "Looking"; },
     equip_item: async ({ itemName }) => {
-      const item = bot.inventory.items().find(i => i.name.includes(itemName));
+      const item = bot.inventory.items().find(i => i.name.includes(itemName.toLowerCase().replace(/ /g, '_')));
       if (item) { await bot.equip(item, 'hand'); return `Equipped`; }
       return "Not found";
     },
@@ -84,12 +83,12 @@ function createToolHandlers(bot) {
       const b = bot.blockAt(new Vec3(x, y, z));
       return b ? `${b.name}` : "No block";
     },
-
     find_nearest_block: async ({ type, maxDistance = 32 }) => {
       const block = bot.findBlock({ matching: (b) => b.name === type || b.name.toLowerCase().includes(type.toLowerCase()), maxDistance });
       return block ? `${block.name} @ ${Math.round(block.position.x)},${Math.round(block.position.y)},${Math.round(block.position.z)}` : `No ${type} nearby`;
     },
     craft_item: async ({ itemName, count = 1 }) => {
+      if (!bot.registry) return "Bot registry not ready";
       const item = bot.registry.itemsByName[itemName.toLowerCase().replace(/ /g, '_')];
       if (!item) return "Unknown item";
       let craftingTable = null;
@@ -106,7 +105,7 @@ function createToolHandlers(bot) {
     },
     consume_food: async ({ itemName }) => {
       if (itemName) {
-        const item = bot.inventory.items().find(i => i.name.includes(itemName));
+        const item = bot.inventory.items().find(i => i.name.includes(itemName.toLowerCase()));
         if (item) await bot.equip(item, 'hand');
       }
       await bot.consume();
@@ -123,7 +122,7 @@ function createToolHandlers(bot) {
       return "Used held item";
     },
     toss_item: async ({ itemName, count = 1 }) => {
-      const item = bot.inventory.items().find(i => i.name.includes(itemName));
+      const item = bot.inventory.items().find(i => i.name.includes(itemName.toLowerCase()));
       if (!item) return "Not in inventory";
       await bot.toss(item.type, null, Math.min(count, item.count));
       return `Tossed ${count} ${itemName}`;
@@ -146,16 +145,17 @@ function createToolHandlers(bot) {
 }
 
 function getObservation(bot, chatHistory) {
+  if (!bot.entity) return "Loading...";
   const pos = bot.entity.position;
   const inventory = bot.inventory.items().map(i => `${i.name}×${i.count}`).join(', ') || 'empty';
   const nearby = Object.values(bot.entities)
-    .filter(e => e !== bot.entity && e.position.distanceTo(pos) < 32)
+    .filter(e => e !== bot.entity && e.position && e.position.distanceTo(pos) < 32)
     .map(e => `${e.id}: ${e.name || e.type} @ ${Math.round(e.position.x)},${Math.round(e.position.y)},${Math.round(e.position.z)}`)
     .join('; ') || 'none';
 
   return `=== OBSERVATION ===
 Position: ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}
-Health: ${bot.health} | Hunger: ${bot.food} | Time: ${bot.time.isDay ? 'DAY' : 'NIGHT'}
+Health: ${bot.health} | Hunger: ${bot.food} | Time: ${bot.time ? (bot.time.isDay ? 'DAY' : 'NIGHT') : 'UNKNOWN'}
 Inventory: ${inventory}
 Nearby entities: ${nearby}
 Recent chat: ${chatHistory.slice(-5).join('\n') || 'none'}
@@ -171,12 +171,15 @@ function setupAutonomousBot(username) {
     auth: 'offline'
   });
 
+  // Load the plugin immediately after bot creation
+  bot.loadPlugin(pathfinder);
+
   let chatHistory = [];
   let isDeciding = false;
   const toolHandlers = createToolHandlers(bot);
 
   async function makeDecision() {
-    if (isDeciding) return;
+    if (isDeciding || !bot.entity) return;
     isDeciding = true;
 
     const obs = getObservation(bot, chatHistory);
@@ -202,8 +205,10 @@ Think creatively and long-term.` },
         for (const call of msg.tool_calls) {
           const fnName = call.function.name;
           const args = JSON.parse(call.function.arguments);
-          const result = await toolHandlers[fnName](args);
-          console.log(`[${username}] [TOOL] ${fnName} → ${result}`);
+          if (toolHandlers[fnName]) {
+            const result = await toolHandlers[fnName](args);
+            console.log(`[${username}] [TOOL] ${fnName} → ${result}`);
+          }
         }
       }
     } catch (err) {
@@ -216,23 +221,20 @@ Think creatively and long-term.` },
     console.log(`🤖 ${username} joined the world!`);
 
     try {
-      // 1. Load the plugin
-      bot.loadPlugin(pathfinder);
-    
-      // 2. Get the version-specific data from the bot's registry
-      const mcData = require('minecraft-data')(bot.version); 
-    
-      // 3. Pass both the bot AND mcData to Movements
-      const defaultMove = new Movements(bot, mcData);
-    
-      bot.pathfinder.setMovements(defaultMove);
-      console.log(`[${username}] Pathfinder loaded successfully`);
-
+      // FIXED: Use the bot's own registry to initialize Movements
+      if (bot.registry) {
+        const defaultMove = new Movements(bot, bot.registry);
+        bot.pathfinder.setMovements(defaultMove);
+        console.log(`[${username}] Pathfinder Movements initialized successfully.`);
+      } else {
+        console.error(`[${username}] Registry not ready on spawn.`);
+      }
     } catch (e) {
-      console.error(`[${username}] Pathfinder load failed:`, e.message);
+      console.error(`[${username}] Pathfinder setup failed:`, e.message);
     }
 
-    setInterval(makeDecision, 2500);
+    // Start the AI loop
+    setInterval(makeDecision, 5000); 
   });
 
   bot.on('chat', (usernameMsg, message) => {
@@ -251,5 +253,5 @@ for (let i = 0; i < NUM_BOTS; i++) {
   const suffix = NUM_BOTS === 1 ? '' : '_' + Math.random().toString(36).substring(2, 8).toUpperCase();
   const username = BASE_USERNAME + suffix;
   console.log(`Queueing ${username}`);
-  setTimeout(() => setupAutonomousBot(username), i * 1500);
+  setTimeout(() => setupAutonomousBot(username), i * 3000); // 3-second stagger to avoid rate limits
 }
