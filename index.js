@@ -215,11 +215,19 @@ Think creatively and long-term.` },
   bot.on('spawn', () => {
     console.log(`🤖 ${username} joined the world!`);
 
-    // ← FIXED: Load pathfinder ONLY after spawn (mcData is now ready)
     try {
+      // 1. Load the plugin
       bot.loadPlugin(pathfinder);
+    
+      // 2. Get the version-specific data from the bot's registry
+      const mcData = require('minecraft-data')(bot.version); 
+    
+      // 3. Pass both the bot AND mcData to Movements
+      const defaultMove = new Movements(bot, mcData);
+    
+      bot.pathfinder.setMovements(defaultMove);
       console.log(`[${username}] Pathfinder loaded successfully`);
-      bot.pathfinder.setMovements(new Movements(bot));
+
     } catch (e) {
       console.error(`[${username}] Pathfinder load failed:`, e.message);
     }
